@@ -241,6 +241,7 @@ function toRequestHeaders(headers: ProviderHeaders): Record<string, string> {
 
 async function resolvePiAuth(ctx: ExtensionContext, responsesUrl: string, providers: readonly string[], modelOverride?: string, hasExplicitResponsesUrl = false, useProviderBaseUrl = false): Promise<OpenAIAuth | undefined> {
 	let models: ReturnType<typeof ctx.modelRegistry.getAll>;
+	let invalidProviderUrlError: CustomOpenAIBaseUrlError | undefined;
 	try {
 		models = ctx.modelRegistry.getAll();
 	} catch {
@@ -270,15 +271,26 @@ async function resolvePiAuth(ctx: ExtensionContext, responsesUrl: string, provid
 				throw new CustomOpenAIBaseUrlError(`OpenAI web search cannot reuse Pi credentials with a custom baseUrl by default. Set openaiResponsesUrl in ${CONFIG_PATH} to the full Responses endpoint for this credential.`);
 			}
 		}
+		let providerResponsesUrl = responsesUrl;
+		if (useProviderBaseUrl) {
+			try {
+				providerResponsesUrl = resolveProviderResponsesUrl(baseUrl, useCodexEndpoint);
+			} catch (err) {
+				if (!(err instanceof CustomOpenAIBaseUrlError)) throw err;
+				invalidProviderUrlError ??= err;
+				continue;
+			}
+		}
 		return {
 			provider,
 			apiKey: resolved.apiKey,
 			model: modelOverride ?? preferred.id,
 			headers: resolved.headers ?? {},
-			responsesUrl: useProviderBaseUrl ? resolveProviderResponsesUrl(baseUrl, useCodexEndpoint) : responsesUrl,
+			responsesUrl: providerResponsesUrl,
 			...(useProviderBaseUrl ? { useProviderBaseUrl: true } : {}),
 		};
 	}
+	if (invalidProviderUrlError) throw invalidProviderUrlError;
 	return undefined;
 }
 
@@ -591,7 +603,7 @@ function buildAlphaSearchHeaders(headers: Record<string, string>, apiKey: string
 	return result;
 }
 
-async function parseAlphaSearchResponse(response: Response, numResults: number | undefined): Promise<SearchResponse> {
+async function parseAlphaSearchResponse(response: Response, numResults = 5): Promise<SearchResponse> {
 	const text = await response.text();
 	let payload: unknown;
 	try {

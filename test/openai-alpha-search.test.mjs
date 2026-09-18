@@ -8,6 +8,7 @@ import { test } from "node:test";
 const moduleUrl = new URL("../openai-search.ts", import.meta.url).href;
 const routingUrl = new URL("../gemini-search.ts", import.meta.url).href;
 const indexUrl = new URL("../index.ts", import.meta.url).href;
+const storageUrl = new URL("../storage.ts", import.meta.url).href;
 const source = (url = "https://example.com/a", title = "Source", snippet = "Evidence") => ({ type: "text_result", url, title, snippet });
 const payload = { output: "Plain search output", results: [source()] };
 const legacyPayload = { output: [
@@ -30,6 +31,7 @@ async function runScenario(t, scenario = {}) {
 		input: `
 			const scenario = ${JSON.stringify({ payload, ...scenario })};
 			const requests = [];
+			const authProviders = [];
 			const timeoutValues = [];
 			const originalTimeout = AbortSignal.timeout;
 			AbortSignal.timeout = (ms) => {
@@ -56,8 +58,11 @@ async function runScenario(t, scenario = {}) {
 			const model = { id: "gpt-5.6-luna", provider: "openai", api: "openai-responses", baseUrl: "https://api.openai.com/v1", ...scenario.model };
 			if (scenario.missingBaseUrl) delete model.baseUrl;
 			const ctx = scenario.registry || scenario.current ? { model, modelRegistry: {
-				getAll: () => [model],
-				getApiKeyAndHeaders: async () => ({ ok: true, apiKey: scenario.key ?? "registry-test-key", headers: scenario.headers ?? {}, ...(scenario.authBaseUrl ? { baseUrl: scenario.authBaseUrl } : {}) }),
+				getAll: () => scenario.models ?? [model],
+				getApiKeyAndHeaders: async (selected) => {
+					authProviders.push(selected.provider);
+					return scenario.authByProvider?.[selected.provider] ?? { ok: true, apiKey: scenario.key ?? "registry-test-key", headers: scenario.headers ?? {}, ...(scenario.authBaseUrl ? { baseUrl: scenario.authBaseUrl } : {}) };
+				},
 			} } : undefined;
 			const c = new AbortController();
 			if (scenario.preAbort) c.abort();
@@ -74,7 +79,8 @@ async function runScenario(t, scenario = {}) {
 					const searched = await search.execute("alpha-tool", { queries: ["test query", "second query"], provider: "openai", workflow: "none", ...scenario.options }, undefined, undefined, ctx);
 					const retrieve = tools.find(tool => tool.name === "get_search_content");
 					const retrieved = await retrieve.execute("alpha-retrieve", { responseId: searched.details.searchId, queryIndex: 1 });
-					result = { text: searched.content[0].text, searchId: searched.details.searchId, retrieved: retrieved.content[0].text, isError: searched.isError || retrieved.isError || false };
+					const { getResult } = await import(${JSON.stringify(storageUrl)});
+					result = { text: searched.content[0].text, searchId: searched.details.searchId, retrieved: retrieved.content[0].text, isError: searched.isError || retrieved.isError || false, storedResults: getResult(searched.details.searchId)?.queries.map(query => query.results) };
 				} else if (scenario.route) {
 					const { search } = await import(${JSON.stringify(routingUrl)});
 					result = await search("test query", { ...options, extensionContext: ctx });
@@ -88,7 +94,7 @@ async function runScenario(t, scenario = {}) {
 					}
 				}
 			} catch (err) { error = err.message; name = err.name; kind = err.kind; }
-			console.log(JSON.stringify({ requests, timeoutValues, result, error, name, kind }));
+			console.log(JSON.stringify({ requests, authProviders, timeoutValues, result, error, name, kind }));
 		`,
 	});
 	assert.equal(child.status, 0, child.stderr || String(child.error));
@@ -209,6 +215,28 @@ test("alpha ignores malformed/non-text sources, cleans URLs, deduplicates and ca
 	] });
 });
 
+for (const tool of [false, true]) {
+	test(`alpha defaults to five deduplicated sources when numResults is omitted (tool: ${tool})`, async (t) => {
+		const sources = Array.from({ length: 25 }, (_, i) => source(`https://example.com/default-result-${i}`));
+		const out = await runScenario(t, { tool, payload: { output: "Keep the plaintext answer", results: [
+			null, { type: "image_result", url: "https://ignored.example" }, source("javascript:alert(1)"),
+			source("https://example.com/default-result-0?utm_source=openai"), sources[0], ...sources,
+		] } });
+		assert.equal(out.error, undefined);
+		const expectedUrls = sources.slice(0, 5).map(item => item.url);
+		if (tool) {
+			assert.equal(out.result.isError, false);
+			assert.equal(out.result.storedResults.length, 2);
+			for (const results of out.result.storedResults) assert.deepEqual(results.map(item => item.url), expectedUrls);
+			assert.match(out.result.retrieved, /default-result-4/);
+			assert.doesNotMatch(out.result.retrieved, /default-result-5\b/);
+		} else {
+			assert.equal(out.result.answer, "Keep the plaintext answer");
+			assert.deepEqual(out.result.results.map(item => item.url), expectedUrls);
+		}
+	});
+}
+
 test("alpha caps requested source count at 20", async (t) => {
 	const out = await runScenario(t, { options: { numResults: 50 }, payload: { results: Array.from({ length: 25 }, (_, i) => source(`https://example.com/${i}`)) } });
 	assert.equal(out.error, undefined);
@@ -328,6 +356,99 @@ for (const alpha of [false, true]) {
 		});
 	}
 }
+
+const providerCandidates = {
+	registry: true,
+	models: [
+		{ id: "gpt-5.6-luna", provider: "first", api: "openai-responses", baseUrl: "https://first-model.example/v1" },
+		{ id: "gpt-5.6-terra", provider: "second", api: "openai-responses", baseUrl: "https://second-model.example/v1" },
+	],
+	authByProvider: {
+		first: { ok: true, apiKey: "first-provider-key", headers: { "X-Selected": "first" } },
+		second: { ok: true, apiKey: "second-provider-key", baseUrl: "https://second-auth.example/team/v1", headers: { "X-Selected": "second" } },
+	},
+	config: { openaiSearchProviders: ["first", "second"], openaiUseProviderBaseUrl: true },
+};
+
+for (const alpha of [false, true]) {
+	for (const [reason, modelBaseUrl, authBaseUrl] of [
+		["missing model URL", undefined, undefined],
+		["invalid model URL", "/v1", undefined],
+		["invalid auth URL", "https://first-model.example/v1", "invalid"],
+	]) {
+		test(`provider URL reuse skips ${reason} and keeps the next candidate's credentials (alpha: ${alpha})`, async (t) => {
+			const args = {
+				...providerCandidates,
+				models: [{ ...providerCandidates.models[0], baseUrl: modelBaseUrl }, providerCandidates.models[1]],
+				authByProvider: { ...providerCandidates.authByProvider, first: { ...providerCandidates.authByProvider.first, baseUrl: authBaseUrl } },
+				config: { ...providerCandidates.config, openaiUseAlphaSearch: alpha },
+				payload: alpha ? payload : legacyPayload,
+			};
+			const out = await runScenario(t, args);
+			assert.equal(out.error, undefined);
+			assert.deepEqual(out.authProviders, ["first", "second"]);
+			assert.equal(out.requests.length, 1);
+			assert.equal(out.requests[0].url, "https://second-auth.example/team/v1/" + (alpha ? "alpha/search" : "responses"));
+			assert.equal(out.requests[0].headers.authorization, "Bearer second-provider-key");
+			assert.equal(out.requests[0].headers["x-selected"], "second");
+			assert.equal(out.requests[0].body.model, "gpt-5.6-terra");
+			const available = await runScenario(t, { ...args, availability: true });
+			assert.equal(available.error, undefined);
+			assert.equal(available.result, true);
+			assert.deepEqual(available.authProviders, ["first", "second"]);
+			assert.deepEqual(available.requests, []);
+		});
+	}
+
+	test(`provider URL reuse checks all invalid candidates without standalone key fallback (alpha: ${alpha})`, async (t) => {
+		const args = {
+			...providerCandidates,
+			models: [{ ...providerCandidates.models[0], baseUrl: undefined }, providerCandidates.models[1]],
+			authByProvider: { ...providerCandidates.authByProvider, second: { ...providerCandidates.authByProvider.second, baseUrl: "ftp://invalid.example/v1" } },
+			config: { ...providerCandidates.config, openaiUseAlphaSearch: alpha },
+		};
+		const out = await runScenario(t, args);
+		assert.deepEqual(out.authProviders, ["first", "second"]);
+		assert.deepEqual(out.requests, []);
+		assert.match(out.error, /openaiUseProviderBaseUrl requires an absolute http\(s\) provider baseUrl/);
+		const available = await runScenario(t, { ...args, availability: true });
+		assert.equal(available.error, undefined);
+		assert.equal(available.result, false);
+		assert.deepEqual(available.authProviders, ["first", "second"]);
+		assert.deepEqual(available.requests, []);
+	});
+}
+
+for (const flag of [undefined, false]) {
+	test(`provider candidates retain the existing origin guard with URL reuse ${flag}`, async (t) => {
+		const out = await runScenario(t, { ...providerCandidates, config: { ...providerCandidates.config, openaiUseProviderBaseUrl: flag } });
+		assert.deepEqual(out.authProviders, ["first"]);
+		assert.deepEqual(out.requests, []);
+		assert.match(out.error, /custom baseUrl/);
+	});
+}
+
+test("explicit endpoint keeps the first credential candidate even with an invalid provider URL", async (t) => {
+	const out = await runScenario(t, {
+		...providerCandidates,
+		models: [{ ...providerCandidates.models[0], baseUrl: "invalid" }, providerCandidates.models[1]],
+		config: { ...providerCandidates.config, openaiResponsesUrl: "https://explicit.example/v1/responses" },
+	});
+	assert.equal(out.error, undefined);
+	assert.deepEqual(out.authProviders, ["first"]);
+	assert.equal(out.requests.length, 1);
+	assert.equal(out.requests[0].url, "https://explicit.example/v1/alpha/search");
+	assert.equal(out.requests[0].headers.authorization, "Bearer first-provider-key");
+});
+
+test("provider URL reuse does not retry a failed request with later credential candidates", async (t) => {
+	const out = await runScenario(t, { ...providerCandidates, status: 503 });
+	assert.deepEqual(out.authProviders, ["first"]);
+	assert.equal(out.requests.length, 1);
+	assert.equal(out.requests[0].url, "https://first-model.example/v1/alpha/search");
+	assert.equal(out.requests[0].headers.authorization, "Bearer first-provider-key");
+	assert.match(out.error, /API error 503/);
+});
 
 for (const flag of [undefined, false]) {
 	test(`provider URL reuse stays off for ${flag}`, async (t) => {

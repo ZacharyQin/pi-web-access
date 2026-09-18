@@ -62,7 +62,7 @@ Set `openaiUseProviderBaseUrl: true` to derive the search endpoint from the Pi p
 }
 ```
 
-If `openaiResponsesUrl` is supplied, this switch is ignored and the existing explicit-endpoint/auth rules apply. Remove that field to use the provider address. Otherwise the switch must be a boolean. The selected provider's auth-resolved `baseUrl` takes precedence over its model's `baseUrl`; credentials and URL are resolved together for each search. Reload Pi after changing its provider configuration.
+If `openaiResponsesUrl` is supplied, this switch is ignored and the existing explicit-endpoint/auth rules apply. Remove that field to use the provider address. Otherwise the switch must be a boolean. The selected provider's auth-resolved `baseUrl` takes precedence over its model's `baseUrl`; credentials and URL are resolved together for each search. Candidates with missing or invalid resolved base URLs are skipped in configured order, keeping each candidate's credentials bound to its own URL. Reload Pi after changing its provider configuration.
 
 Only absolute HTTP(S) URLs are accepted. Preserve the origin, port, prefix, and query parameters, and complete the Responses path as follows:
 
@@ -75,7 +75,7 @@ Only absolute HTTP(S) URLs are accepted. Preserve the origin, port, prefix, and 
 
 Codex auth with the official `https://chatgpt.com/backend-api` base uses `/backend-api/codex/responses`. When reusing a custom provider URL with Codex credentials, retain its destination and required account headers rather than redirecting to the official host. If `openaiUseAlphaSearch` is also true, replace the derived `/responses` suffix with `/alpha/search`.
 
-Without selected Pi credentials or a valid provider base URL, this mode fails closed and marks OpenAI unavailable; it does not fall back to the official endpoint or a standalone API key. API-key-only configurations can use `openaiResponsesUrl` instead. This switch applies to independent OpenAI provider selection; `searchRouting.useCurrentModel` retains its existing official-endpoint selection and eligibility rules.
+If no candidate has usable Pi credentials and a valid provider base URL, this mode fails closed and marks OpenAI unavailable; it does not fall back to the official endpoint or a standalone API key. API-key-only configurations can use `openaiResponsesUrl` instead. This switch applies to independent OpenAI provider selection; `searchRouting.useCurrentModel` retains its existing official-endpoint selection and eligibility rules.
 
 ### Optional OpenAI standalone search
 
@@ -91,7 +91,7 @@ Set `openaiUseAlphaSearch: true` to use the independent Codex `alpha/search` pro
 
 The selected Responses endpoint must end in `/responses` (an optional trailing slash is accepted). Its path suffix becomes `/alpha/search`, preserving the host, port, prefix, and query parameters. For example, `/v1/responses` becomes `/v1/alpha/search`. By default, Codex subscription auth selects `https://chatgpt.com/backend-api/codex/alpha/search`; with provider URL reuse enabled, it follows the resolved provider endpoint instead. Existing credential selection, search-model overrides, custom-base-URL safeguards when URL reuse is disabled, and official current-model eligibility rules still apply. This flag does not make an arbitrary gateway support standalone search.
 
-Standalone requests use `id`, `model`, and `commands.search_query`, not a Responses tool call. Plaintext `output` and structured `text_result` sources are returned without another model-generated summary. Encrypted-only responses are rejected. `numResults` caps the deduplicated source list at up to 20; recency maps to 1/7/30/365 days, and positive domain filters map to `domains`. Excluded domains (`-example.com`) are explicitly unsupported in this mode rather than silently ignored.
+Standalone requests use `id`, `model`, and `commands.search_query`, not a Responses tool call. Plaintext `output` and structured `text_result` sources are returned without another model-generated summary. Encrypted-only responses are rejected. `numResults` defaults to 5 and caps the deduplicated source list at up to 20; recency maps to 1/7/30/365 days, and positive domain filters map to `domains`. Excluded domains (`-example.com`) are explicitly unsupported in this mode rather than silently ignored.
 
 Missing endpoint responses (HTTP 404/405/501) and excluded-domain requests follow the existing `unsupported` fallback policy. Other HTTP errors, cancellation, proxy transport, and the 60-second request deadline retain their existing behavior. There is no automatic retry through Responses. To permit another provider, configure `searchRouting.fallbackOn` accordingly; explicit `provider: "openai"` remains strict. Reload Pi after changing configuration.
 
