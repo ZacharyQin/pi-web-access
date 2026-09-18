@@ -49,7 +49,51 @@ Works immediately with no API keys — Exa MCP provides zero-config search. If P
 
 In `auto` mode (default), `web_search` tries a configured SearXNG endpoint first for local/private search. When the active Pi model is `openai-codex`, it then tries Codex-backed OpenAI search. Otherwise it tries Exa (direct API if keyed, MCP if not) before OpenAI, then Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, Firecrawl, Jina, SERPdive, Perplexity, Gemini API, and Gemini Web when browser-cookie access is enabled. Exa handles search; curator summary drafts are generated separately by the configured Pi summary model, defaulting to Claude Haiku, Codex Luna, Codex Terra, Gemini 3.6 Flash, GPT-5 mini, then DeepSeek V4 Flash when available. Slow summary drafts fall back to a deterministic result summary after a bounded deadline.
 
-For a third-party Responses-compatible gateway, set `openaiResponsesUrl` to its full Responses endpoint. Pi credentials with a custom `baseUrl` require this setting: explicit OpenAI search otherwise fails before sending a request, and availability checks mark OpenAI unavailable without blocking other providers. The auth-resolved base URL takes precedence over the model's; gateway Responses/`web_search` support is not inferred. An explicit endpoint overrides this guard, including an explicit official endpoint. Official or absent Pi base URLs keep the default `https://api.openai.com/v1/responses`. Codex subscription routing is unchanged.
+For a third-party Responses-compatible gateway, set `openaiResponsesUrl` to its full Responses endpoint, or opt into reusing the selected Pi provider's base URL as described below. Without either opt-in, Pi credentials with a custom `baseUrl` are refused before sending a request, and availability checks mark OpenAI unavailable without blocking other providers. The auth-resolved base URL takes precedence over the model's; gateway Responses/`web_search` support is not inferred. An explicit endpoint overrides this guard, including an explicit official endpoint. Existing Codex subscription endpoint selection is preserved when provider URL reuse is not active.
+
+### Reuse the selected Pi provider URL
+
+Set `openaiUseProviderBaseUrl: true` to derive the search endpoint from the Pi provider whose credentials were selected. This avoids maintaining the same gateway address in both `models.json` and `web-search.json`. The default is `false`.
+
+```json
+{
+  "openaiSearchProviders": ["my-openai-provider"],
+  "openaiUseProviderBaseUrl": true
+}
+```
+
+If `openaiResponsesUrl` is supplied, this switch is ignored and the existing explicit-endpoint/auth rules apply. Remove that field to use the provider address. Otherwise the switch must be a boolean. The selected provider's auth-resolved `baseUrl` takes precedence over its model's `baseUrl`; credentials and URL are resolved together for each search. Reload Pi after changing its provider configuration.
+
+Only absolute HTTP(S) URLs are accepted. Preserve the origin, port, prefix, and query parameters, and complete the Responses path as follows:
+
+| Provider base URL | Derived Responses endpoint |
+| --- | --- |
+| `https://gateway.example.com` | `https://gateway.example.com/v1/responses` |
+| `https://gateway.example.com/v1` | `https://gateway.example.com/v1/responses` |
+| `https://gateway.example.com/team/v1/` | `https://gateway.example.com/team/v1/responses` |
+| `https://gateway.example.com/v1/responses` | `https://gateway.example.com/v1/responses` |
+
+Codex auth with the official `https://chatgpt.com/backend-api` base uses `/backend-api/codex/responses`. When reusing a custom provider URL with Codex credentials, retain its destination and required account headers rather than redirecting to the official host. If `openaiUseAlphaSearch` is also true, replace the derived `/responses` suffix with `/alpha/search`.
+
+Without selected Pi credentials or a valid provider base URL, this mode fails closed and marks OpenAI unavailable; it does not fall back to the official endpoint or a standalone API key. API-key-only configurations can use `openaiResponsesUrl` instead. This switch applies to independent OpenAI provider selection; `searchRouting.useCurrentModel` retains its existing official-endpoint selection and eligibility rules.
+
+### Optional OpenAI standalone search
+
+Set `openaiUseAlphaSearch: true` to use the independent Codex `alpha/search` protocol instead of Responses-hosted `web_search`. The default is `false`; omitting the flag keeps existing Responses behavior. Non-boolean values are rejected.
+
+```json
+{
+  "openaiUseAlphaSearch": true,
+  "openaiResponsesUrl": "https://gateway.example.com/v1/responses",
+  "openaiSearchProviders": ["my-openai-provider"]
+}
+```
+
+The selected Responses endpoint must end in `/responses` (an optional trailing slash is accepted). Its path suffix becomes `/alpha/search`, preserving the host, port, prefix, and query parameters. For example, `/v1/responses` becomes `/v1/alpha/search`. By default, Codex subscription auth selects `https://chatgpt.com/backend-api/codex/alpha/search`; with provider URL reuse enabled, it follows the resolved provider endpoint instead. Existing credential selection, search-model overrides, custom-base-URL safeguards when URL reuse is disabled, and official current-model eligibility rules still apply. This flag does not make an arbitrary gateway support standalone search.
+
+Standalone requests use `id`, `model`, and `commands.search_query`, not a Responses tool call. Plaintext `output` and structured `text_result` sources are returned without another model-generated summary. Encrypted-only responses are rejected. `numResults` caps the deduplicated source list at up to 20; recency maps to 1/7/30/365 days, and positive domain filters map to `domains`. Excluded domains (`-example.com`) are explicitly unsupported in this mode rather than silently ignored.
+
+Missing endpoint responses (HTTP 404/405/501) and excluded-domain requests follow the existing `unsupported` fallback policy. Other HTTP errors, cancellation, proxy transport, and the 60-second request deadline retain their existing behavior. There is no automatic retry through Responses. To permit another provider, configure `searchRouting.fallbackOn` accordingly; explicit `provider: "openai"` remains strict. Reload Pi after changing configuration.
 
 To route automatic searches through the active Pi model, configure an ordered route without a top-level `provider`:
 
@@ -63,7 +107,7 @@ To route automatic searches through the active Pi model, configure an ordered ro
 }
 ```
 
-With `useCurrentModel: true`, the automatic `openai` step uses Hosted `web_search` when the active model is a GPT model backed by an official OpenAI Responses endpoint: `openai`/`openai-responses` on HTTPS `api.openai.com`, or `openai-codex`/`openai-codex-responses` on the official ChatGPT Codex endpoint. Third-party gateways, Azure, and other models continue to the next route entry. A tool-level `provider` or top-level `provider` remains an explicit override; `provider: "openai"` keeps the existing independent OpenAI/Codex search-model behavior.
+With `useCurrentModel: true`, the automatic `openai` step uses Hosted `web_search` (or standalone search when `openaiUseAlphaSearch` is enabled) when the active model is a GPT model backed by an official OpenAI Responses endpoint: `openai`/`openai-responses` on HTTPS `api.openai.com`, or `openai-codex`/`openai-codex-responses` on the official ChatGPT Codex endpoint. Third-party gateways, Azure, and other models continue to the next route entry. A tool-level `provider` or top-level `provider` remains an explicit override; `provider: "openai"` keeps the existing independent OpenAI/Codex search-model behavior.
 
 For sandboxed networks that provide outbound proxy transport through environment variables, set `ssrf.trustEnvProxy` to `true` to skip local DNS preflight for proxied hostnames:
 

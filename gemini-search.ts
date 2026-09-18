@@ -11,6 +11,7 @@ import { isBraveAvailable, searchWithBrave } from "./brave.ts";
 import {
 	isCurrentModelHostedSearchEligible,
 	isOpenAISearchAvailable,
+	OpenAIAlphaSearchUnsupportedError,
 	searchWithCurrentModelOpenAI,
 	searchWithOpenAI,
 } from "./openai-search.ts";
@@ -344,6 +345,8 @@ function classifyProviderError(provider: ResolvedSearchProvider, err: unknown): 
 		kind = "credential";
 	} else if (isAbortError(err)) {
 		kind = "aborted";
+	} else if (err instanceof OpenAIAlphaSearchUnsupportedError) {
+		kind = "unsupported";
 	} else if (provider === "xai" && status === 403 && /spending[- ]limit|(?:no|out of) credits?|insufficient quota|quota (?:exceeded|exhausted)|credits? (?:exhausted|depleted|used up)/.test(lower)) {
 		kind = "quota";
 	} else if (status === 401 || status === 403) {
