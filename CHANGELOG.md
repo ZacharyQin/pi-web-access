@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - Added opt-in `openaiUseProviderBaseUrl` to reuse the selected Pi provider's auth/model base URL for OpenAI search, completing missing endpoint paths and skipping invalid URL candidates without changing credential destinations. Explicit `openaiResponsesUrl` takes precedence; the switch works with Responses and standalone alpha search.
 
-- Added opt-in `openaiUseAlphaSearch` for the independent Codex `alpha/search` protocol, reusing configured OpenAI credentials and endpoint selection while preserving Responses search by default. Supports plaintext/source results (defaulting to five sources), recency and allowed-domain filters; unsupported excluded-domain filters and missing endpoints follow the configured provider fallback policy.
+- Added opt-in `openaiUseAlphaSearch` for the independent Codex `alpha/search` protocol, reusing configured OpenAI credentials and endpoint selection while preserving Responses search by default. Supports plaintext/source results (defaulting to five sources), recency and allowed-domain filters; unsupported excluded-domain filters and missing endpoints follow the configured provider fallback policy. Thanks to [@ZacharyQin](https://github.com/ZacharyQin) for [PR #420](https://github.com/nicobailon/pi-web-access/pull/420).
 
 - Added `fetch.defaultMode` and `fetch.allowedModes` configuration for choosing the default `fetch_content` mode and disabling unwanted modes. Thanks to [@Slooz](https://github.com/Slooz) for #395.
 - Added `webSearch.allowedProviders` to enforce one search-provider policy across web search, source checks, routing, aggregation, schemas, and Curator. Thanks [@Slooz](https://github.com/Slooz) for #396.
